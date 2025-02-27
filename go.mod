@@ -4,7 +4,6 @@ go 1.24.0
 
 require (
 	github.com/gorilla/mux v1.8.1
-	github.com/lib/pq v1.10.9
 	github.com/mattheath/base62 v0.0.0-20150408093626-b80cdc656a7a
 	github.com/redis/go-redis/v9 v9.7.1
 )

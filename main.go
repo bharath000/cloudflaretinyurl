@@ -1,87 +1,133 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
+	"fmt"
+	"log"
 	"net/http"
 	"sync"
+	"time"
+
+	"context"
 
 	"github.com/gorilla/mux"
+	_ "github.com/lib/pq"
 	"github.com/mattheath/base62"
+	"github.com/redis/go-redis/v9"
 )
 
 type URL struct {
-	ShortURL string `json:"short_url"`
-	LongURL  string `json:"long_url"`
+	ShortURL  string     `json:"short_url"`
+	LongURL   string     `json:"long_url"`
+	CreatedAt time.Time  `json:"created_at"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
 var (
-	urlStore    = make(map[string]string)
-	lock        = sync.RWMutex{}
-	counter     = 14776336
-	counterLock = sync.Mutex{}
-	baseURL     = "http://localhost:8080/api/v1/"
+	lock    = sync.RWMutex{}
+	baseURL = "http://localhost:8080/api/v1/"
+	db      *sql.DB
+	rdb     *redis.Client
 )
 
-// Generate a unique short URL using a global counter with Base62 encoding
+func init() {
+	var err error
+	db, err = sql.Open("postgres", "user=youruser password=yourpassword dbname=tinyurl sslmode=disable")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	rdb = redis.NewClient(&redis.Options{
+		Addr: "localhost:6379",
+	})
+}
+
 func generateShortURL() string {
-	counterLock.Lock()
-	counter++
-	shortURL := base62.EncodeInt64(int64(counter))
-	counterLock.Unlock()
+	// Increment global counter in Redis to ensure unique values
+	newCounter, err := rdb.Incr(context.Background(), "url_global_counter").Result()
+	if err != nil {
+		log.Fatal("Failed to increment global counter in Redis:", err)
+	}
+
+	// Convert counter to Base62 to generate short URL
+	shortURL := base62.EncodeInt64(newCounter)
+
 	return shortURL
 }
 
-// Create Tiny URL
 func createTinyURL(w http.ResponseWriter, r *http.Request) {
 	var request URL
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
-	shortURL := generateShortURL()
 
-	lock.Lock()
-	urlStore[shortURL] = request.LongURL
-	lock.Unlock()
+	shortURL := generateShortURL()
+	expiresAt := time.Now().Add(30 * 24 * time.Hour)
+
+	// Store in PostgreSQL
+	_, err := db.Exec("INSERT INTO urls (short_url, long_url, created_at, expires_at) VALUES ($1, $2, NOW(), $3)", shortURL, request.LongURL, expiresAt)
+	if err != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+
+	// Cache in Redis
+	rdb.Set(context.Background(), shortURL, request.LongURL, 24*time.Hour)
 
 	response := URL{ShortURL: baseURL + shortURL, LongURL: request.LongURL}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
 
-// Redirect Tiny URL with 302 status
 func redirectTinyURL(w http.ResponseWriter, r *http.Request) {
 	params := mux.Vars(r)
 	shortURL := params["shortURL"]
 
-	lock.RLock()
-	longURL, exists := urlStore[shortURL]
-	lock.RUnlock()
-
-	if !exists {
-		http.Error(w, "URL not found", http.StatusNotFound)
-		return
+	longURL, err := rdb.Get(context.Background(), shortURL).Result()
+	if err == redis.Nil {
+		lock.RLock()
+		err = db.QueryRow("SELECT long_url FROM urls WHERE short_url=$1", shortURL).Scan(&longURL)
+		lock.RUnlock()
+		if err != nil {
+			http.Error(w, "URL not found", http.StatusNotFound)
+			return
+		}
+		// Cache the result in Redis
+		rdb.Set(context.Background(), shortURL, longURL, 24*time.Hour)
 	}
 
-	http.Redirect(w, r, longURL, http.StatusFound) // 302 Redirect
+	// Increment access count
+	_ = rdb.Incr(context.Background(), fmt.Sprintf("count:%s:all_time", shortURL))
+	_ = rdb.Incr(context.Background(), fmt.Sprintf("count:%s:24h", shortURL))
+	_ = rdb.Incr(context.Background(), fmt.Sprintf("count:%s:week", shortURL))
+
+	// Store Click Timestamp in PostgreSQL
+	_, err = db.Exec("INSERT INTO url_clicks (short_url, accessed_at) VALUES ($1, NOW())", shortURL)
+	if err != nil {
+		log.Println("Failed to log click event:", err)
+	}
+
+	http.Redirect(w, r, longURL, http.StatusFound)
 }
 
-// Delete Tiny URL
 func deleteTinyURL(w http.ResponseWriter, r *http.Request) {
 	params := mux.Vars(r)
 	shortURL := params["shortURL"]
 
 	lock.Lock()
-	_, exists := urlStore[shortURL]
-	if exists {
-		delete(urlStore, shortURL)
-	}
+	_, err := db.Exec("DELETE FROM urls WHERE short_url=$1", shortURL)
 	lock.Unlock()
-
-	if !exists {
-		http.Error(w, "URL not found", http.StatusNotFound)
+	if err != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
 		return
 	}
+
+	rdb.Del(context.Background(), shortURL)
+	rdb.Del(context.Background(), fmt.Sprintf("count:%s:all_time", shortURL))
+	rdb.Del(context.Background(), fmt.Sprintf("count:%s:24h", shortURL))
+	rdb.Del(context.Background(), fmt.Sprintf("count:%s:week", shortURL))
 
 	w.WriteHeader(http.StatusNoContent)
 }

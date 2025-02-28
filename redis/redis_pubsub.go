@@ -33,11 +33,3 @@ func ListenForExpiredClicks() {
 		}
 	}
 }
-
-// Publishes a message to Redis Pub/Sub
-func PublishMessage(channel string, message string) {
-	err := rdb.Publish(context.Background(), channel, message).Err()
-	if err != nil {
-		log.Println("Failed to publish message:", err)
-	}
-}

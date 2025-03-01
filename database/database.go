@@ -71,3 +71,28 @@ func CacheURL(shortURL, longURL string) {
 func GetCachedURL(shortURL string) (string, error) {
 	return RDB.Get(context.Background(), shortURL).Result()
 }
+
+// Get click counts from PostgreSQL
+func GetClickCounts(shortURL string) (int, int, int, error) {
+	var allTime, last24h, lastWeek int
+
+	// Get all-time clicks
+	err := DB.QueryRow("SELECT COUNT(*) FROM url_clicks WHERE short_url=$1", shortURL).Scan(&allTime)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+
+	// Get last 24 hours clicks
+	err = DB.QueryRow("SELECT COUNT(*) FROM url_clicks WHERE short_url=$1 AND accessed_at >= NOW() - INTERVAL '24 hours'", shortURL).Scan(&last24h)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+
+	// Get last week clicks
+	err = DB.QueryRow("SELECT COUNT(*) FROM url_clicks WHERE short_url=$1 AND accessed_at >= NOW() - INTERVAL '7 days'", shortURL).Scan(&lastWeek)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+
+	return allTime, last24h, lastWeek, nil
+}

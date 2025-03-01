@@ -121,14 +121,44 @@ func GetTinyURLCounts(w http.ResponseWriter, r *http.Request) {
 
 	allTime, last24h, lastWeek, err := rediscounter.GetURLCounter(shortURL)
 	if err != nil {
-		http.Error(w, "Failed to retrieve counts", http.StatusInternalServerError)
-		return
+		log.Println("Redis unavailable, fetching click counts from database...")
+
+		var err error
+		allTime, last24h, lastWeek, err = database.GetClickCounts(shortURL)
+		if err != nil {
+			http.Error(w, "Failed to retrieve click counts", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	response := map[string]int{
 		"all_time":      allTime,
 		"last_24_hours": last24h,
 		"last_week":     lastWeek,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// GetClickCountsHandler retrieves click counts for a short URL directly from PostgreSQL
+func GetClickCountsHandler(w http.ResponseWriter, r *http.Request) {
+	params := mux.Vars(r)
+	shortURL := params["shortURL"]
+
+	// Query the database for click counts
+	allTime, last24h, lastWeek, err := database.GetClickCounts(shortURL)
+	if err != nil {
+		log.Println("Failed to retrieve click counts from database:", err)
+		http.Error(w, "Failed to retrieve click counts", http.StatusInternalServerError)
+		return
+	}
+
+	// Return response in JSON format
+	response := map[string]int{
+		"all_time":  allTime,
+		"last_24h":  last24h,
+		"last_week": lastWeek,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

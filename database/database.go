@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -17,12 +18,22 @@ var (
 // Initialize Database Connections
 func InitDB() error {
 	var err error
-	DB, err = sql.Open("postgres", "user=youruser password=yourpassword dbname=tinyurl sslmode=disable")
+	postgresURL := os.Getenv("DATABASE_URL")
+	if postgresURL == "" {
+		return fmt.Errorf("DATABASE_URL environment variable is not set")
+	}
+
+	DB, err = sql.Open("postgres", postgresURL)
 	if err != nil {
 		return fmt.Errorf("failed to connect to PostgreSQL: %w", err)
 	}
 
-	RDB = redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+	redisURL := os.Getenv("REDIS_URL")
+	if redisURL == "" {
+		redisURL = "localhost:6379"
+	}
+
+	RDB = redis.NewClient(&redis.Options{Addr: redisURL})
 
 	// Check if Redis is reachable
 	if _, err := RDB.Ping(context.Background()).Result(); err != nil {

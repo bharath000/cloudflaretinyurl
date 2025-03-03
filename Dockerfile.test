@@ -1,0 +1,18 @@
+# 🛠 Base image with Go for running tests
+FROM golang:1.23
+
+# Set working directory
+WORKDIR /app
+
+# Copy go module files and download dependencies
+COPY go.mod go.sum ./
+RUN go mod tidy && go mod download
+
+# Copy source code and tests
+COPY . .
+
+# Install Testify
+RUN go get github.com/stretchr/testify
+
+# Set the default command to run tests
+CMD ["go", "test", "-v", "./test/..."]

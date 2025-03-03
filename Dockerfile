@@ -1,21 +1,25 @@
-# Use Golang base image
-FROM golang:1.23
+FROM golang:1.23 AS builder
 
-# Set the working directory inside the container
 WORKDIR /app
 
-# Copy go.mod and go.sum files to download dependencies
 COPY go.mod go.sum ./
-RUN go mod download
+RUN go mod tidy && go mod download
 
-# Copy the entire project into the container
 COPY . .
 
-# Build the Go application
-RUN go build -o cloudflaretinyurl .
 
-# Expose the application port
+RUN CGO_ENABLED=0 GOOS=linux go build -o cloudflaretinyurl .
+
+# Final stage
+FROM ubuntu:22.04
+
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY test /app/test
+
+COPY --from=builder /app/cloudflaretinyurl .
+
 EXPOSE 8080
 
-# Run the application
 CMD ["./cloudflaretinyurl"]

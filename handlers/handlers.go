@@ -3,6 +3,7 @@ package handlers
 import (
 	"cloudflaretinyurl/utils"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -32,7 +33,7 @@ func generateShortURL() string {
 	if err != nil {
 		log.Fatal("Failed to increment global counter:", err)
 	}
-	return base62.EncodeInt64(newCounter)
+	return base62.EncodeInt64(newCounter + 10000)
 }
 
 // Create Short URL Handler
@@ -42,11 +43,26 @@ func CreateTinyURL(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
-
+	log.Println("long url", request.LongURL)
 	shortURL := generateShortURL()
 
+	// Check if long URL already exists
+	existingShortURL, existingExpiry, err := database.GetShortURLByLongURL(request.LongURL)
+	if err != nil && err != sql.ErrNoRows {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+
+	// If existing URL is found and not expired, return the existing short URL
+	if existingShortURL != "" && (existingExpiry == nil || existingExpiry.After(time.Now())) {
+		log.Println("Long URL already exists, returning existing short URL:", existingShortURL)
+		response := URL{ShortURL: baseURL + existingShortURL, LongURL: request.LongURL}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+		return
+	}
 	// Store in PostgreSQL
-	err := database.StoreURL(shortURL, request.LongURL)
+	err = database.StoreURL(shortURL, request.LongURL, request.ExpiresAt)
 	if err != nil {
 		http.Error(w, "Database error", http.StatusInternalServerError)
 		return
@@ -110,6 +126,7 @@ func DeleteTinyURL(w http.ResponseWriter, r *http.Request) {
 	database.RDB.Del(context.Background(), fmt.Sprintf("count:%s:all_time", shortURL))
 	database.RDB.Del(context.Background(), fmt.Sprintf("count:%s:24h", shortURL))
 	database.RDB.Del(context.Background(), fmt.Sprintf("count:%s:week", shortURL))
+	database.RDB.Del(context.Background(), fmt.Sprintf("count:%s:1min", shortURL))
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -119,8 +136,10 @@ func GetTinyURLCounts(w http.ResponseWriter, r *http.Request) {
 	params := mux.Vars(r)
 	shortURL := params["shortURL"]
 
-	allTime, last24h, lastWeek, err := rediscounter.GetURLCounter(shortURL)
+	allTime, last24h, lastWeek, last1min, err := rediscounter.GetURLCounter(shortURL)
+	log.Println(allTime, last24h, lastWeek, last1min)
 	if err != nil {
+		log.Println("Redis error:", err)
 		log.Println("Redis unavailable, fetching click counts from database...")
 
 		var err error
@@ -135,6 +154,7 @@ func GetTinyURLCounts(w http.ResponseWriter, r *http.Request) {
 		"all_time":      allTime,
 		"last_24_hours": last24h,
 		"last_week":     lastWeek,
+		"last_1min":     last1min,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

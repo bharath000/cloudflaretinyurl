@@ -3,7 +3,7 @@ package database
 import (
 	"context"
 	"database/sql"
-	"fmt"
+	"log"
 	"os"
 	"time"
 
@@ -18,28 +18,38 @@ var (
 
 // Initialize Database Connections
 func InitDB() error {
-	var err error
 	postgresURL := os.Getenv("DATABASE_URL")
 	if postgresURL == "" {
-		return fmt.Errorf("DATABASE_URL environment variable is not set")
+		log.Fatal("DATABASE_URL environment variable is not set")
 	}
 
+	log.Println("Connecting to PostgreSQL at:", postgresURL)
+
+	var err error
 	DB, err = sql.Open("postgres", postgresURL)
 	if err != nil {
-		return fmt.Errorf("failed to connect to PostgreSQL: %w", err)
+		log.Fatalf("Failed to open PostgreSQL connection: %v", err)
 	}
 
+	// Verify Database Connection
+	// err = DB.Ping()
+	// if err != nil {
+	// 	log.Fatalf("Failed to ping PostgreSQL: %v", err)
+	// }
+	// log.Println("✅ Connected to PostgreSQL successfully!")
+
+	// Initialize Redis
 	redisURL := os.Getenv("REDIS_URL")
 	if redisURL == "" {
-		redisURL = "localhost:6379"
+		redisURL = "cloudflaretinyurl_redis:6379"
 	}
 
 	RDB = redis.NewClient(&redis.Options{Addr: redisURL})
-
-	// Check if Redis is reachable
 	if _, err := RDB.Ping(context.Background()).Result(); err != nil {
-		return fmt.Errorf("failed to connect to Redis: %w", err)
+		log.Fatalf("Failed to connect to Redis: %v", err)
 	}
+	log.Println("✅ Connected to Redis successfully!")
+
 	return nil
 }
 
@@ -48,10 +58,12 @@ func IncrementGlobalCounter() (int64, error) {
 	return RDB.Incr(context.Background(), "url_global_counter").Result()
 }
 
-// Store URL in PostgreSQL
-func StoreURL(shortURL, longURL string) error {
+func StoreURL(shortURL, longURL string, expiresAt *time.Time) error {
 	_, err := DB.Exec("INSERT INTO urls (short_url, long_url, created_at, expires_at) VALUES ($1, $2, NOW(), $3)",
-		shortURL, longURL, time.Now().Add(30*24*time.Hour))
+		shortURL, longURL, expiresAt)
+	if err != nil {
+		log.Printf("Database insertion error: %v", err)
+	}
 	return err
 }
 
@@ -95,4 +107,24 @@ func GetClickCounts(shortURL string) (int, int, int, error) {
 	}
 
 	return allTime, last24h, lastWeek, nil
+}
+
+// GetShortURLByLongURL checks if a long URL already exists and returns its short URL & expiry date
+func GetShortURLByLongURL(longURL string) (string, *time.Time, error) {
+	var shortURL string
+	var expiresAt sql.NullTime
+
+	err := DB.QueryRow("SELECT short_url, expires_at FROM urls WHERE long_url = $1", longURL).
+		Scan(&shortURL, &expiresAt)
+
+	if err != nil {
+		return "", nil, err
+	}
+
+	// Convert sql.NullTime to *time.Time
+	if expiresAt.Valid {
+		return shortURL, &expiresAt.Time, nil
+	}
+
+	return shortURL, nil, nil
 }

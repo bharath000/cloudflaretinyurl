@@ -4,37 +4,59 @@ services:
   cloudflaretinyurl:
     build: .
     container_name: cloudflaretinyurl_service
+    networks:
+      - app_network
     ports:
       - "8080:8080"
     depends_on:
-      - postgres
-      - redis
+      - cloudflaretinyurl_postgres
+      - cloudflaretinyurl_redis
     environment:
-      DATABASE_URL: "postgres://cloudflare_user:Cf!Db@8#Xy2&9z@postgres:5432/cloudflaretinyurl?sslmode=disable"
-      REDIS_URL: "redis:6379"
-    restart: always
+      DATABASE_URL: "postgres://cloudflare_user:cloudflare_pwd@cloudflaretinyurl_postgres:5432/cloudflaretinyurl?sslmode=disable"
+      REDIS_URL: "cloudflaretinyurl_redis:6379"
 
-  postgres:
+  cloudflaretinyurl_postgres:
     image: postgres:13
     container_name: cloudflaretinyurl_postgres
     environment:
       POSTGRES_USER: cloudflare_user
-      POSTGRES_PASSWORD: Cf!Db@8#Xy2&9z
+      POSTGRES_PASSWORD: cloudflare_pwd
       POSTGRES_DB: cloudflaretinyurl
+    networks:
+      - app_network
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql # Create Tables on start
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
 
-  redis:
+  cloudflaretinyurl_redis:
     image: redis:6.2
     container_name: cloudflaretinyurl_redis
+    networks:
+      - app_network
     ports:
       - "6379:6379"
     volumes:
       - redisdata:/data
-    command: ["redis-server", "--appendonly", "yes"] # Enables AOF persistence
+    command: ["redis-server", "--appendonly", "yes"]
+
+  test_runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.test  # Use the test-specific Dockerfile
+    container_name: cloudflaretinyurl_test
+    networks:
+      - app_network
+    depends_on:
+      - cloudflaretinyurl
+    environment:
+      DATABASE_URL: "postgres://cloudflare_user:cloudflare_pwd@cloudflaretinyurl_postgres:5432/cloudflaretinyurl?sslmode=disable"
+      REDIS_URL: "cloudflaretinyurl_redis:6379"
+
+networks:
+  app_network:
+  # driver: "bridge"
 
 volumes:
   pgdata:
